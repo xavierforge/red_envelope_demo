@@ -1,0 +1,60 @@
+mental_model raw output
+date      : 2026-10-11 18:55:47 CST
+python    : 3.14.6 free-threading build (main, Jun 23 2026, 15:54:43) [Clang 22.1.3 ]
+executable: .venv/bin/python (via uv run --no-sync python)
+machine   : Apple M1 Pro (6P+2E), macOS 26.6.2, Darwin 25.6.0
+
+################ uv run --no-sync python -X gil=1 mental_model/01_aliasing_xor_mutability.py ################
+[災難] 共享可變計數器      :    4000000 / 期望 4000000  (這次剛好沒露餡，換 -X gil=0 再跑)
+[fixA] 各給一份再合併      :    4000000 / 期望 4000000
+[fixC] 上鎖序列化          :    4000000 / 期望 4000000
+[fixB] 共享不可變(唯讀)    : 500 個偶數(每條執行緒一致)
+
+心智模型：先問『共享嗎？被改嗎？』兩者皆是，就從 A/B/C 三條路擇一。
+
+################ uv run --no-sync python -X gil=0 mental_model/01_aliasing_xor_mutability.py ################
+[災難] 共享可變計數器      :     976521 / 期望 4000000  <-- lost update!
+[fixA] 各給一份再合併      :    4000000 / 期望 4000000
+[fixC] 上鎖序列化          :    4000000 / 期望 4000000
+[fixB] 共享不可變(唯讀)    : 500 個偶數(每條執行緒一致)
+
+心智模型：先問『共享嗎？被改嗎？』兩者皆是，就從 A/B/C 三條路擇一。
+
+################ uv run --no-sync python -X gil=0 mental_model/02_interior_mutability.py ################
+[封裝鎖] SafeCounter.increment :    2400000 / 期望 2400000
+[分片合併] 改很多次的擴充解法  : {'even': 1200000, 'odd': 1200000}  總計 2400000 / 期望 2400000
+
+心智模型：需要共享又要改 -> 把同步藏進物件（封裝鎖）；
+          改很多次而熱鎖變瓶頸 -> 各自累加再合併，而不是硬搶一把鎖。
+
+################ uv run --no-sync python -X gil=0 mental_model/03_send_sync.py ################
+[移交 Send]      queue.Queue 移交 job，consumer 完成 32 件
+[owned]          threading.local 每執行緒自己一份，共處理 320000 筆
+[共享唯讀 Sync]  frozen dataclass 多執行緒同時讀，合計 1343832000
+[淺層不可變]     frozen 只凍住欄位綁定：
+  重新綁定欄位被擋：FrozenInstanceError: cannot assign to field 'rate'
+  對 list 欄位 append 沒被擋：cfg.tags = ['mutated']
+
+心智模型：共享前先當那道閘。
+  要『移交』給另一條執行緒 -> Send：put 之後就放手，對方取出後才碰，任一時刻只有一方存取。
+  要『每條執行緒自己一份』 -> owned：threading.local 放 thread 的資源，task 的狀態用區域變數加回傳值合併。
+  要『共享』給多條執行緒   -> Sync：只共享不可變資料（注意 frozen 是淺層的），否則就得上鎖（概念 2）。
+  Python 不會替你檢查，所以這道問句要你自己問。
+
+################ uv run --no-sync python -X gil=0 mental_model/04_api_shape.py ################
+[1. 鎖擁有資料]
+  鎖和資料分開放，忘了上鎖：    33067 / 160000
+  Mutex 擁有資料，with 才拿得到：  160000 / 160000
+[2. 只提供完整操作]（初始餘額 100000，每次提 1 元，提到被拒絕為止）
+  get/set 讓呼叫方自己組合：最終餘額 0，成功提款 446981 次，超額提款 346981 元
+  只提供 withdraw：          最終餘額 0，成功提款 100000 次，超額提款 0 元
+  update(fn) 在鎖內套用函式：200
+[3. 誠實面對極限]
+  離開 with 後沒持鎖直接改，鎖內看到的值變成 -1
+  Python 擋得住疏忽、擋不住故意：Rust 的 MutexGuard 有 lifetime，借用逃不出 guard。
+
+心智模型：上鎖那條路的三個紀律。
+  鎖擁有資料：資料只從 with 區塊內拿得到，忘記上鎖這件事就寫不出來。
+  只提供完整操作：check-then-act 整段放進同一把鎖，不給呼叫方拆開的機會。
+  誠實面對極限：這些是靠 API 形狀換來的紀律，Rust 靠的是型別與 lifetime。
+
