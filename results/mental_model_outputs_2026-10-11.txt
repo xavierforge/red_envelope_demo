@@ -5,7 +5,7 @@ executable: .venv/bin/python (via uv run --no-sync python)
 machine   : Apple M1 Pro (6P+2E), macOS 26.6.2, Darwin 25.6.0
 
 ################ uv run --no-sync python -X gil=1 mental_model/01_aliasing_xor_mutability.py ################
-[災難] 共享可變計數器      :    4000000 / 期望 4000000  (這次剛好沒露餡，換 -X gil=0 再跑)
+[災難] 共享可變計數器      :    4000000 / 期望 4000000  (GIL build 下這個形狀不會被切開，換 -X gil=0 看 race 現形)
 [fixA] 各給一份再合併      :    4000000 / 期望 4000000
 [fixC] 上鎖序列化          :    4000000 / 期望 4000000
 [fixB] 共享不可變(唯讀)    : 500 個偶數(每條執行緒一致)

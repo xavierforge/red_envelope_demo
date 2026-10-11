@@ -12,7 +12,7 @@ Rust 的規則：同一份資料，任一時刻要嘛多個唯讀共享，要嘛
 全是這一種。修復只有三條路，對應底下三個 fix。
 
 跑法：
-    python -X gil=1 mental_model/01_aliasing_xor_mutability.py   # race 通常被 GIL 藏住
+    python -X gil=1 mental_model/01_aliasing_xor_mutability.py   # GIL build 下這個形狀不會被切開（切換點不在讀寫之間）
     python -X gil=0 mental_model/01_aliasing_xor_mutability.py   # race 現形，unsafe 會 < 期望
 """
 
@@ -98,7 +98,7 @@ def fix_serialize() -> int:
 if __name__ == "__main__":
     got = disaster()
     print(f"[災難] 共享可變計數器      : {got:>10} / 期望 {EXPECTED}"
-          + ("  <-- lost update!" if got != EXPECTED else "  (這次剛好沒露餡，換 -X gil=0 再跑)"))
+          + ("  <-- lost update!" if got != EXPECTED else "  (GIL build 下這個形狀不會被切開，換 -X gil=0 看 race 現形)"))
     print(f"[fixA] 各給一份再合併      : {fix_dont_alias():>10} / 期望 {EXPECTED}")
     print(f"[fixC] 上鎖序列化          : {fix_serialize():>10} / 期望 {EXPECTED}")
     print(f"[fixB] 共享不可變(唯讀)    : {fix_dont_mutate()} 個偶數(每條執行緒一致)")
