@@ -1,5 +1,14 @@
 # 紅包範例 demo（free-threaded Python × PyO3）
 
+> **What this is**: the act-three demo for a PyCon TW 2026 talk on free-threaded Python seen through Rust's
+> aliasing, Send/Sync and interior-mutability rules. A PyO3 + rayon extension, a pure-Python baseline,
+> four pure-Python mental-model scripts, and the probes behind the act-one race demos.
+> **Requirements**: CPython 3.14 free-threaded build (`python3.14t`), Rust toolchain, `uv`, `maturin`, a multi-core CPU.
+> **How to run the comparison**: `uv venv --python 3.14t && uv sync && uv run maturin develop --release`,
+> then `uv run --no-sync python compare.py` (about five minutes; it runs gil=1 and gil=0 in subprocesses).
+> **Where the measured results live**: `results/` holds every raw output verbatim; `results/compare_2026-10-11.txt`
+> is the only source of numbers used in the slides.
+
 這是 PyCon TW 2026 演講「別把 GIL 時代的思維帶進 Free-threaded Python：從 Rust 視角重新理解
 Python 並行」第三幕的 demo。骨架沿用《從 Pythonista 到 Rustacean》第 9 章的範例（attach/detach +
 rayon + `gil_used = false`），加上一個共享彙總把第二幕的三個 Rust 原理逼出來，以及純 Python 基準線。
@@ -23,6 +32,7 @@ rayon + `gil_used = false`），加上一個共享彙總把第二幕的三個 Ru
 | `tests/test_benchmark.py` | 擴充驗證 | 計時 + 給 pytest-run-parallel 壓測用 |
 | `experiments/counter_shapes.py` | 第一幕共用元件 | 兩種形狀的計數器（`+= 1` 與夾一個呼叫）與 Barrier 起跑的 runner，probe 和測試共用 |
 | `experiments/switchpoint_probe.py` | 切換點探針 | 六格實驗（gil=1/0 × 形狀 A/B × 切換間隔預設/1e-6），附 `--dis` 看 bytecode |
+| `experiments/cache_probe.py` | 開場的模組層級快取 | 64 個 key、8 條執行緒走 `if key not in cache: cache[key] = compute(key)`，數重複計算次數，`--fixed` 整段上鎖 |
 | `experiments/borrow_checker_probe.py` | runtime borrow checker 探針 | 8 條執行緒同時呼叫 `bump_mut`，統計 `Already borrowed` |
 | `experiments/compile_fail/` | 第二幕編譯失敗證據 | 獨立 cargo 專案，刻意編不過，產生 lib.rs 檔尾引用的 E0594 |
 | `results/` | 演講引用的數字 | 所有實測輸出原封不動存檔，投影片只從這裡取數 |
@@ -147,6 +157,21 @@ uv run --no-sync python -X gil=1 experiments/switchpoint_probe.py --variant B --
 uv run --no-sync python -X gil=0 experiments/switchpoint_probe.py --variant A
 ```
 
+`experiments/cache_probe.py` 是開場那個模組層級字典快取的探針：64 個 key，8 條執行緒 Barrier 起跑後
+各自走過全部 key，取值函式就是 `if key not in cache: cache[key] = compute(key)`，`compute` 約 1 ms。
+`CONTAINS_OP`（檢查）和 `STORE_SUBSCR`（寫入）之間夾著對 `compute` 的 `CALL`，那就是 eval breaker 的
+檢查點，所以 GIL build 用預設 5 ms 切換間隔也會重複計算。`--fixed` 把 check-then-act 整段包進同一把鎖。
+原始輸出（含 `--dis` 的 bytecode）在 [`results/cache_probe_2026-10-11.txt`](results/cache_probe_2026-10-11.txt)：
+gil=1 預設間隔每次約 10 個重複，1e-6 約 430 個，free-threaded 約 180 到 280 個，`--fixed` 為 0。
+
+```bash
+uv run --no-sync python -X gil=1 experiments/cache_probe.py --dis
+uv run --no-sync python -X gil=1 experiments/cache_probe.py
+uv run --no-sync python -X gil=1 experiments/cache_probe.py --interval 0.000001
+uv run --no-sync python -X gil=0 experiments/cache_probe.py
+uv run --no-sync python -X gil=0 experiments/cache_probe.py --fixed
+```
+
 ## runtime borrow checker 探針
 
 PyO3 在 runtime 替 `#[pyclass]` 維護借用旗標。`RedEnvelope.bump_mut(spins)` 的簽章是
@@ -197,6 +222,8 @@ python -X gil=0 mental_model/04_api_shape.py
 | `02_interior_mutability.py` | Interior mutability | 把 Lock 封裝進物件（乾淨介面）；改很多次改用分片合併，不硬搶熱鎖 |
 | `03_send_sync.py` | Send / Sync | 三段：移交（queue.Queue，put 之後不再碰）/ 每條 thread 自己的資源（threading.local 放資源，task 狀態用區域變數加回傳值合併）/ 共享唯讀（frozen dataclass，並示範 frozen 只是淺層） |
 | `04_api_shape.py` | API 形狀（上鎖那條路的三個紀律） | 鎖擁有資料（只在 with 內 yield）/ 只提供完整操作（withdraw 與 update(fn)，get/set 版實跑出超額提款）/ 誠實面對極限（參照逃出 with 仍可改，Rust 的 MutexGuard 有 lifetime） |
+
+四支的原始輸出（01 兩種 build、02 到 04 free-threaded）在 [`results/mental_model_outputs_2026-10-11.txt`](results/mental_model_outputs_2026-10-11.txt)。
 
 這些 snippet 刻意用使用者自己的例子（第一幕的 counter、SQLAlchemy 式的 per-thread、
 frozen dataclass）。
