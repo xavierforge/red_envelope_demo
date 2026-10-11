@@ -1,0 +1,48 @@
+compare.py raw output (四列對照表定稿；投影片引用的唯一數字來源)
+date        : 2026-10-11 (run 18:12:24 to 18:17:42 CST)
+python      : 3.14.6 free-threading build (main, Jun 23 2026, 15:54:43) [Clang 22.1.3 ]
+executable  : .venv/bin/python (via uv run --no-sync python compare.py)
+machine     : Apple M1 Pro (6P+2E), macOS 26.6.2, Darwin 25.6.0
+pyo3        : 0.29.0  (Cargo.lock)
+rayon       : 1.12.0  (Cargo.lock)
+maturin     : 1.14.1 (uv run maturin develop --release)
+rustc       : 1.96.1
+params      : N_ENVELOPES=100, ITERATIONS=1_000_000, PY_THREADS=8, INTERP_CALLS=80_000, REPS=5
+per cell    : 5 runs, median ± sample stdev; gil=1 and gil=0 each in its own subprocess
+command     : uv run --no-sync python compare.py
+note        : bump_mut 於本對照表定稿後修改並重建，四個量測函式未變。
+
+################ terminal output (verbatim) ################
+warning: Using incompatible environment (`.venv`) due to `--no-sync` (The project environment's Python version does not satisfy the request: `Python >=3.14`)
+每格跑 5 次取中位數 ± 樣本標準差；分別以 GIL 開 / 關各開一個子行程量測。
+（單執行緒每次約十幾秒，整體可能要數分鐘，下面會顯示即時進度）
+
+  [gil=on ] rep 1/5 …
+  [gil=on ] rep 2/5 …
+  [gil=on ] rep 3/5 …
+  [gil=on ] rep 4/5 …
+  [gil=on ] rep 5/5 …
+  [gil=off] rep 1/5 …
+  [gil=off] rep 2/5 …
+  [gil=off] rep 3/5 …
+  [gil=off] rep 4/5 …
+  [gil=off] rep 5/5 …
+
+==================================================================================
+完整對照表 | Python 3.14.6 | free-threaded build：是 | 每格 = 5 次中位數 ± 標準差
+子行程實測 GIL 狀態 → gil=1：啟用 ; gil=0：關閉 | interp calls/顆 = 80000
+==================================================================================
+版本                                      | GIL 啟用               | free-threaded          | 移除 GIL 的加速
+-------------------------------------------------------------------------------------------------------------
+純 Python（單執行緒）                     | 18.938±0.449s (1.00x)  | 19.111±0.168s (1.00x)  | —              
+純 Python（8 執行緒）                     | 19.057±0.433s (0.99x)  | 3.811±0.025s (5.01x)   | 約 5.0x        
+native（rayon 8，detach 純算術）          | 0.042±0.027s (447.44x) | 0.043±0.005s (441.66x) | 約 1.0x        
+interpreter-bound（rayon 8，呼叫 Python） | 2.096±0.076s (9.04x)   | 0.349±0.011s (54.78x)  | 約 6.0x        
+==================================================================================
+說明：括號 speedup 相對各欄「單執行緒」中位數；移除 GIL 的加速 = GIL 時間 / free-threaded 時間。
+
+GIL 紅利對照（移除 GIL 後，同一段工作快了幾倍）：
+  native（原生計算，平行區不碰直譯器）    ：約 1.0x   ← GIL 時代就拿得到
+  interpreter-bound（平行區呼叫 Python）   ：約 6.0x   ← free-threading 才解鎖
+  解讀：native ≈ 1x 代表那種加速本來就有（釋放 GIL 跑原生計算）；
+        interpreter-bound 遠大於 1x，才是 free-threading 帶來的真正價值。

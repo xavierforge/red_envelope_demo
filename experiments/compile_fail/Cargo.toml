@@ -1,0 +1,10 @@
+[package]
+name = "compile_fail"
+version = "0.1.0"
+edition = "2024"
+
+# 刻意獨立：不依賴 pyo3，也不納入 root 的 Cargo 設定。
+# 這個專案的目的就是編不過，見 README.md。
+
+[dependencies]
+rayon = "1.12.0"

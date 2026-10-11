@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "free_threaded_example"
+requires-python = ">=3.14"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dynamic = ["version"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]                      # 讓 tests/ 能 import 專案根目錄的 python_baseline
+markers = [
+    "benchmark_timing: 計時測試（pytest-benchmark fixture），pytest-run-parallel 壓測時略過",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-benchmark>=4.0.0",
+    # 壓測擴充的執行緒安全（不是 benchmark）；搭配 timeout 避免 free-threaded 下 hang。
+    "pytest-run-parallel>=0.6.0",
+    "pytest-timeout>=2.3.0",
+]

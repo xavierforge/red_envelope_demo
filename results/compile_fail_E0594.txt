@@ -1,0 +1,27 @@
+    Updating crates.io index
+     Locking 6 packages to latest Rust 1.96.1 compatible versions
+ Downloading crates ...
+  Downloaded either v1.19.0
+  Downloaded crossbeam-epoch v0.9.21
+  Downloaded crossbeam-deque v0.8.8
+  Downloaded crossbeam-utils v0.8.23
+   Compiling crossbeam-utils v0.8.23
+   Compiling crossbeam-epoch v0.9.21
+   Compiling crossbeam-deque v0.8.8
+   Compiling rayon-core v1.13.0
+    Checking either v1.19.0
+    Checking rayon v1.12.0
+    Checking compile_fail v0.1.0 (/Users/chihying/rust-playground/projects/red_envelope_demo/experiments/compile_fail)
+error[E0594]: cannot assign to `valid_count`, as it is a captured variable in a `Fn` closure
+  --> src/main.rs:10:13
+   |
+ 7 |     let mut valid_count: u64 = 0;
+   |         --------------- `valid_count` declared here, outside the closure
+ 8 |     amounts.par_iter().for_each(|&amount| {
+   |                                 --------- in this closure
+ 9 |         if amount % 2 == 0 {
+10 |             valid_count += 1;
+   |             ^^^^^^^^^^^^^^^^ cannot assign
+
+For more information about this error, try `rustc --explain E0594`.
+error: could not compile `compile_fail` (bin "compile_fail") due to 1 previous error

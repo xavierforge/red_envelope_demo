@@ -1,0 +1,14 @@
+[package]
+name = "free_threaded_example"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "free_threaded_example"
+crate-type = ["cdylib"]
+
+[dependencies]
+# 0.29：attach/detach、PyOnceLock 等 API 已穩定；且從 0.28 起 #[pymodule]
+# 預設就是 gil_used = false，所以 lib.rs 不必再手寫那行標記 free-thread-safe。
+pyo3 = "0.29.0"
+rayon = "1.12.0"

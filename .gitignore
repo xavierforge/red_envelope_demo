@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.benchmarks/
+.mypy_cache/
+.ruff_cache/
+*.so
+*.egg-info/
+dist/
+build/
+
+# Rust
+target/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# results/ 必須納入版本控制（投影片引用的數字來源），不要加進來。
