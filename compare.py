@@ -1,4 +1,6 @@
-"""一次跑出完整的「GIL 啟用 vs free-threaded」對照表（含 5 次取中位數 ± 誤差）。
+"""一次跑出完整的「GIL on vs GIL off」對照表（含 5 次取中位數 ± 誤差）。
+
+兩欄都是同一個 free-threaded build，以 -X gil=1 / gil=0 切換；GIL on 那欄不是一般版 CPython。
 
 用法（在 free-threaded Python 上）：
 
@@ -14,11 +16,13 @@
     子行程去量測，再把兩邊每列的中位數 ± 樣本標準差併成一張表。
 
 這張表的重點（補上「free-threading 到底多買到什麼」這個洞）：
-    - native（rayon）：平行區完全不碰直譯器的原生計算。兩種 build 都會平行 =>
-      「移除 GIL 的加速」≈ 1x，代表這種加速 GIL 時代就有（numpy/Polars 那一招）。
-    - interpreter-bound（rayon）：平行區內反覆呼叫 Python callback，必須持有直譯器。
-      GIL build 序列化、free-threaded 才平行 => 「移除 GIL 的加速」會很大。
-    兩列的「移除 GIL 的加速」並排，就一眼看出 free-threading 真正獨有的貢獻。
+    - 算術 workload，Rust native（detach）：平行區完全不碰直譯器的原生計算。
+      GIL on / GIL off 都會平行 => 同列比值 ≈ 1x，代表這種加速 GIL on 時就拿得到
+      （numpy/Polars 那一招）。
+    - callback workload（attached，呼叫 Python）：平行區內反覆呼叫 Python callback，
+      必須持有直譯器。GIL on 序列化、GIL off 才平行 => 同列比值會很大。
+    callback workload 與算術 workload 是不同的工作，只看同列 GIL on / GIL off 的比值，
+    不拿 callback 列去比純 Python 單執行緒。
 """
 
 from __future__ import annotations
@@ -38,12 +42,13 @@ ITERATIONS = 1_000_000
 PY_THREADS = 8
 INTERP_CALLS = 80_000
 
-# 表格的列：(顯示名稱, 量測 key, 是否為 speedup 基準列)
+# 表格的列：(顯示名稱, 量測 key, 是否印相對單執行緒的括號倍率)
+# callback 列與算術列是不同的工作，所以不印相對純 Python 單執行緒的倍率，只印秒數。
 ROW_DEFS = [
-    ("純 Python（單執行緒）", "single", True),
-    ("純 Python（{threads} 執行緒）", "threads", False),
-    ("native（rayon {threads}，detach 純算術）", "native", False),
-    ("interpreter-bound（rayon {threads}，呼叫 Python）", "interp", False),
+    ("算術 workload，純 Python，1 thread", "single", True),
+    ("算術 workload，純 Python，{threads} threads", "threads", True),
+    ("算術 workload，Rust native，{threads} workers（detach）", "native", True),
+    ("callback workload，{threads} workers（attached，呼叫 Python）", "interp", False),
 ]
 
 
@@ -159,16 +164,20 @@ def _stat(samples: list[float | None]) -> tuple[float, float] | None:
     return statistics.median(clean), spread
 
 
-def _cell(stat: tuple[float, float] | None, baseline_med: float | None) -> str:
+def _cell(
+    stat: tuple[float, float] | None, baseline_med: float | None, with_speedup: bool
+) -> str:
     if stat is None:
         return "未建置"
     med, spread = stat
+    if not with_speedup:
+        return f"{med:.3f}±{spread:.3f}s"
     speedup = f"{baseline_med / med:.2f}x" if baseline_med and med > 0 else "—"
     return f"{med:.3f}±{spread:.3f}s ({speedup})"
 
 
 def _gain(on: dict, off: dict, key: str) -> float | None:
-    """移除 GIL 的加速 = 同一列 GIL 時間 / free-threaded 時間。"""
+    """同列加速 = 同一列 GIL on 時間 / GIL off 時間。"""
     s_on = _stat(on["timings"][key])
     s_off = _stat(off["timings"][key])
     if not s_on or not s_off or s_off[0] <= 0:
@@ -177,7 +186,7 @@ def _gain(on: dict, off: dict, key: str) -> float | None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="GIL vs free-threaded 完整對照表")
+    ap = argparse.ArgumentParser(description="GIL on vs GIL off 完整對照表")
     ap.add_argument(
         "--reps", type=int, default=5, help="每格量測次數（取中位數，預設 5）"
     )
@@ -195,7 +204,7 @@ def main() -> None:
         "--interp-calls",
         type=int,
         default=INTERP_CALLS,
-        help="interpreter-bound 每顆呼叫 Python callback 幾次",
+        help="callback workload 每顆呼叫 Python callback 幾次",
     )
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -209,11 +218,11 @@ def main() -> None:
     if not sysconfig.get_config_var("Py_GIL_DISABLED"):
         print("⚠  目前的直譯器不是 free-threaded build（Py_GIL_DISABLED != 1）。")
         print(
-            "   -X gil=0 不會生效，free-threaded 欄會等於 GIL 欄。請改用 python3.14t。\n"
+            "   -X gil=0 不會生效，GIL off 欄會等於 GIL on 欄。請改用 python3.14t。\n"
         )
 
     print(
-        f"每格跑 {args.reps} 次取中位數 ± 樣本標準差；分別以 GIL 開 / 關各開一個子行程量測。"
+        f"每格跑 {args.reps} 次取中位數 ± 樣本標準差；分別以 GIL on / GIL off 各開一個子行程量測。"
     )
     print(
         "（單執行緒每次約十幾秒，整體可能要數分鐘，下面會顯示即時進度）\n", flush=True
@@ -236,17 +245,17 @@ def main() -> None:
         f"| 每格 = {args.reps} 次中位數 ± 標準差"
     )
     print(
-        f"子行程實測 GIL 狀態 → gil=1：{'啟用' if on['gil_enabled'] else '關閉'}"
-        f" ; gil=0：{'啟用' if off['gil_enabled'] else '關閉'} | interp calls/顆 = {args.interp_calls}"
+        f"子行程實測 GIL 狀態 → gil=1：{'GIL on' if on['gil_enabled'] else 'GIL off'}"
+        f" ; gil=0：{'GIL on' if off['gil_enabled'] else 'GIL off'} | callback calls/顆 = {args.interp_calls}"
     )
     print("=" * 82)
 
-    headers = ["版本", "GIL 啟用", "free-threaded", "移除 GIL 的加速"]
+    headers = ["workload", "GIL on", "GIL off", "同列加速"]
     table = [headers]
-    for name_tpl, key, _is_base in ROW_DEFS:
+    for name_tpl, key, with_speedup in ROW_DEFS:
         name = name_tpl.format(threads=threads)
-        cell_on = _cell(_stat(on["timings"][key]), base_on_med)
-        cell_off = _cell(_stat(off["timings"][key]), base_off_med)
+        cell_on = _cell(_stat(on["timings"][key]), base_on_med, with_speedup)
+        cell_off = _cell(_stat(off["timings"][key]), base_off_med, with_speedup)
         gain = _gain(on, off, key)
         gain_str = "—" if (key == "single" or gain is None) else f"約 {gain:.1f}x"
         table.append([name, cell_on, cell_off, gain_str])
@@ -262,24 +271,28 @@ def main() -> None:
         print(_fmt(row))
     print("=" * 82)
     print(
-        "說明：括號 speedup 相對各欄「單執行緒」中位數；移除 GIL 的加速 = GIL 時間 / free-threaded 時間。"
+        "說明：兩欄都是同一個 free-threaded build，以 -X gil=1/0 切換，左欄不是一般版 CPython。"
+    )
+    print(
+        "      callback workload 與算術 workload 是不同的工作，只看同列 GIL on / GIL off 的比值；"
+        "算術列的括號倍率相對各欄 1 thread 的中位數。"
     )
 
-    # ---- 核心對照：native 的 GIL 紅利 vs interpreter-bound 的 GIL 紅利 ----
+    # ---- 核心對照：算術 workload（native）與 callback workload 的同列比值 ----
     g_native = _gain(on, off, "native")
     g_interp = _gain(on, off, "interp")
     print()
-    print("GIL 紅利對照（移除 GIL 後，同一段工作快了幾倍）：")
+    print("GIL on / GIL off 同列對照（關掉 GIL 後，同一個 workload 快了幾倍）：")
     if g_native is not None:
         print(
-            f"  native（原生計算，平行區不碰直譯器）    ：約 {g_native:.1f}x   ← GIL 時代就拿得到"
+            f"  算術 workload，Rust native（detach）        ：約 {g_native:.1f}x   ← GIL on 時就拿得到"
         )
     if g_interp is not None:
         print(
-            f"  interpreter-bound（平行區呼叫 Python）   ：約 {g_interp:.1f}x   ← free-threading 才解鎖"
+            f"  callback workload（attached，呼叫 Python）  ：約 {g_interp:.1f}x   ← GIL off 才解鎖"
         )
-    print("  解讀：native ≈ 1x 代表那種加速本來就有（釋放 GIL 跑原生計算）；")
-    print("        interpreter-bound 遠大於 1x，才是 free-threading 帶來的真正價值。")
+    print("  解讀：native 列約 1x，代表原生實作加多執行緒平行的優勢在 GIL on 時就能取得；")
+    print("        callback 列遠大於 1x，才是 GIL off 帶來的部分。兩列是不同的工作，各看自己的同列比值。")
 
 
 if __name__ == "__main__":
