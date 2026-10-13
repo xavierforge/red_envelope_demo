@@ -1,12 +1,16 @@
 """概念 4：API 形狀（讓正確的用法成為唯一好寫的用法）
 
 這支對應演講第二幕「上鎖」那條路的三個紀律。Rust 的 Mutex<T> 把鎖和資料綁在
-一起，拿不到 guard 就碰不到資料，guard 的 lifetime 又讓借用逃不出 with 區塊。
-Python 沒有這些型別層的保證，但 API 的形狀可以逼近同樣的效果：
+一起，拿不到 guard 就碰不到資料，guard 的 lifetime 又讓借用逃不出持鎖的範圍。
+Python 沒有這些型別層的保證，API 的形狀只能逼近其中一部分：
 
-    1. 鎖擁有資料：資料只在 with 區塊內 yield 出來，區塊外拿不到。
-    2. 只提供完整操作：檢查與修改在同一把鎖內，呼叫方沒有機會自己拆開組合。
-    3. 誠實面對極限：Python 擋得住疏忽，擋不住故意。
+    1. 只提供完整操作（主角）：檢查與修改在同一把鎖內，呼叫方只能叫 withdraw，
+       沒有機會自己拆開組合。真正擋得住疏忽的是把完整操作包進 API。
+    2. 鎖擁有資料（便利介面）：資料只在 with 區塊內 yield 出來，想用就得先經過鎖。
+       限制：Python 的 with 不建立新的作用域，as 綁定的名字在區塊之後仍然存在，
+       而且此時沒有持鎖。所以這個包裝讓正確用法好寫，擋不住最自然的疏忽。
+    3. 誠實面對極限：把上面那條限制實際跑一次。Rust 靠 lifetime 擋，Python 只能靠
+       第 1 條把操作包完整。
 
 每段都有「容易寫錯的版本」與「API 形狀讓它難寫錯的版本」。純標準庫，可直接跑：
     python -X gil=0 mental_model/04_api_shape.py
@@ -52,8 +56,12 @@ def separate_lock_misuse() -> int:
 
 # --- 難寫錯：Mutex 擁有資料，只在 with 區塊內 yield 出來 ----------------------
 class Mutex(Generic[T]):
-    """鎖擁有資料。唯一拿到資料的路是 with m.lock() as data，離開區塊就沒有名字指向它。
-    對應 Rust 的 Mutex<T>：資料包在裡面，lock() 回傳 guard，透過 guard 才碰得到。"""
+    """鎖擁有資料。唯一拿到資料的路是 with m.lock() as data，想用資料就得先經過鎖。
+    對應 Rust 的 Mutex<T>：資料包在裡面，lock() 回傳 guard，透過 guard 才碰得到。
+
+    限制：Python 的 with 不建立新的作用域，as 綁定的 data 在區塊之後仍然存在，
+    而且此時沒有持鎖。所以這個包裝是便利介面，真正擋得住疏忽的是把完整操作包進
+    API（見第 2 段的 withdraw）。"""
 
     def __init__(self, value: T) -> None:
         self._lock = threading.Lock()
@@ -70,7 +78,7 @@ def mutex_owns_data() -> int:
 
     def work() -> None:
         for _ in range(PER_THREAD):
-            with m.lock() as data:  # 不經過這裡就拿不到 data，想忘記上鎖都難
+            with m.lock() as data:  # 拿資料的唯一入口；但 data 這個名字在區塊後還在（見第 3 段）
                 data["hits"] += 1
 
     with ThreadPoolExecutor(max_workers=N_THREADS) as ex:
@@ -175,22 +183,38 @@ def whole_operation_account() -> tuple[int, int]:
 # =============================================================================
 # 3. 誠實面對極限
 # =============================================================================
+def natural_escape() -> None:
+    """最直覺的疏忽：with 區塊結束後順手再用一次 data。
+
+    Python 的 with 不建立新的作用域，as 綁定的 data 在區塊之後仍然存在，此時鎖已經
+    釋放。下面這段跑得過，沒有任何錯誤，第二次 += 1 是在沒有持鎖的情況下改資料。
+    Rust 的 MutexGuard 有 lifetime，從 guard 借出的 &mut T 活不過 guard 本身，
+    編譯器會擋。
+    """
+    m = Mutex({"hits": 0})
+    with m.lock() as data:
+        data["hits"] += 1
+    data["hits"] += 1  # data 仍然存在，現在沒有持鎖
+    with m.lock() as seen:
+        print(f"  with 之後直接再用 data，跑得過，沒有任何錯誤；鎖內看到的值變成 {seen['hits']}")
+
+
 def guard_escape() -> None:
     """把 with 區塊內 yield 出來的 dict 存到外部變數，離開區塊後仍然改得動。
 
-    Python 的 with 只管「區塊結束時釋放鎖」，管不了你偷偷留下的參照。
-    Rust 的 MutexGuard 有 lifetime，從 guard 借出的 &mut T 活不過 guard 本身，
-    編譯器會擋。這段示範的就是 Python 的 API 形狀擋得住疏忽，擋不住故意。
+    不需要刻意這樣寫，natural_escape 已經示範最自然的寫法就會逃出去；這段只是
+    把「參照帶出區塊」寫得更明顯，說明 with 只管「區塊結束時釋放鎖」，管不了
+    任何留下來的參照。
     """
     m = Mutex({"hits": 0})
     escaped: dict[str, int] | None = None
     with m.lock() as data:
-        escaped = data  # 故意把參照帶出去
+        escaped = data  # 把參照存到外部變數
     assert escaped is not None
     escaped["hits"] = -1  # 沒有持鎖就改了裡面的資料
     with m.lock() as data:
-        print(f"  離開 with 後沒持鎖直接改，鎖內看到的值變成 {data['hits']}")
-    print("  Python 擋得住疏忽、擋不住故意：Rust 的 MutexGuard 有 lifetime，借用逃不出 guard。")
+        print(f"  存到外部變數再改，鎖內看到的值變成 {data['hits']}")
+    print("  Python 的 with 不建立作用域，參照自然留下；Rust 的 MutexGuard 有 lifetime，借用逃不出 guard。")
 
 
 if __name__ == "__main__":
@@ -208,9 +232,10 @@ if __name__ == "__main__":
     print(f"  update(fn) 在鎖內套用函式：{acct.update(lambda b: b * 2)}")
 
     print("[3. 誠實面對極限]")
+    natural_escape()
     guard_escape()
 
     print("\n心智模型：上鎖那條路的三個紀律。")
-    print("  鎖擁有資料：資料只從 with 區塊內拿得到，忘記上鎖這件事就寫不出來。")
-    print("  只提供完整操作：check-then-act 整段放進同一把鎖，不給呼叫方拆開的機會。")
-    print("  誠實面對極限：這些是靠 API 形狀換來的紀律，Rust 靠的是型別與 lifetime。")
+    print("  只提供完整操作：check-then-act 整段放進同一把鎖，呼叫方只能叫 withdraw，拆不開。這是主角。")
+    print("  鎖擁有資料：便利介面，想用資料就得先經過鎖；但 as 綁定的名字在 with 之後仍在，而且沒有持鎖。")
+    print("  誠實面對極限：Python 的 with 不建立作用域，Rust 靠 lifetime 擋；所以把操作包完整才是真正的保護。")
