@@ -130,8 +130,10 @@ mod free_threaded_example {
     /// 借用檢查器會在「編譯期」直接擋下。對照第一幕：Python 讓同樣的錯默默 race，
     /// Rust 連編都不讓你編。教學用的「壞版本」見本檔最下方註解。
     ///
-    /// [原理3] 這裡用 AtomicU64：interior mutability 的一種，完全不用鎖。
-    /// 「改很多次」的共享計數器，用 atomic 比用 Mutex 更省（無鎖、無競爭點）。
+    /// [原理3] 這裡用 AtomicU64：interior mutability 的一種，用原子操作安全累加，
+    /// 不需要 Mutex。但多條執行緒更新同一個 atomic 仍然會競爭（同一個 cache line
+    /// 在核心之間來回），高競爭時可能成為瓶頸，也不保證 atomic 一定比 Mutex 快。
+    /// 各自累加後合併（見檔尾解法 A）是降低共享更新競爭的一種選擇。
     #[pyfunction]
     fn count_valid_envelopes_parallel() -> PyResult<u64> {
         let count = Python::attach(|outer_py| {
@@ -206,7 +208,7 @@ mod free_threaded_example {
     ) -> PyResult<u64> {
         Python::attach(|outer_py| {
             let envelopes = make_envelopes(outer_py, 100);
-            let valid_count = AtomicU64::new(0); // [原理3] 一樣用無鎖 atomic 彙總
+            let valid_count = AtomicU64::new(0); // [原理3] 一樣用 atomic 彙總，取捨見上方註解
 
             outer_py.detach(|| -> PyResult<()> {
                 envelopes.par_iter().try_for_each(|envelope| -> PyResult<()> {
@@ -285,5 +287,6 @@ mod free_threaded_example {
 //   });
 //   // rayon 的 par_iter 是 scoped borrow，直接借用 Mutex 即可；
 //   // Arc 用在所有權必須活過 scope 的情況（例如 thread::spawn）。
-//   // 「改一次鎖一次」很單純；改很多次時，鎖會成為瓶頸 => 才有 atomic / 分片鎖 / RW 鎖的動機。
+//   // 「改一次鎖一次」很單純；改很多次時，任何共享更新（Mutex 或 atomic）都會競爭。
+//   // 降低競爭的方向是各自累加再合併（解法 A）或分片；單純換成 atomic 不保證比較快。
 // =============================================================================
