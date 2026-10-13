@@ -26,12 +26,13 @@ rayon + `gil_used = false`），加上一個共享彙總把第二幕的三個 Ru
 | `src/lib.rs` `RedEnvelope.bump_mut` | runtime borrow checker 證據 | `&mut self` 方法，給 `experiments/borrow_checker_probe.py` 用 |
 | `src/lib.rs` 檔尾註解 | 第二幕投影片素材 | 壞版本（真實的 E0594 編譯錯誤）/ reduce / Mutex 三種寫法並排 |
 | `python_baseline.py` | 四列表第 1、2 列 | 純 Python 單 / 多執行緒；多執行緒在 GIL on 不加速，本身就是第一幕的證據 |
-| `benchmark.py` | reviewer concern B | 單一 build 跑出四列對照表 |
+| `benchmark.py` | reviewer concern B | 單一 GIL 狀態跑出四列對照表，每列標實際工作量與 Rayon worker 數 |
 | `compare.py` | 四列表定稿 | 同一支 free-threaded 直譯器以 gil=1 / gil=0 各開子行程（GIL on / GIL off），併成一張表 |
-| `tests/test_thread_safety.py` | 第一幕災難可重現 | 五個確定性測試：race 何時露餡取決於讀寫之間有沒有 eval breaker 檢查點 |
+| `tests/test_thread_safety.py` | 第一幕災難可重現 | 加鎖後必須正確的測試，加上一個刻意安排交錯的確定性 lost-update 教學測試 |
+| `tests/test_report_rendering.py` | 對照表呈現規則 | 用假量測結果驗證倍率該不該印（N/A 規則、Rayon worker 數、未建置） |
 | `tests/test_benchmark.py` | 擴充驗證 | 計時 + 給 pytest-run-parallel 壓測用 |
-| `experiments/counter_shapes.py` | 第一幕共用元件 | 兩種形狀的計數器（`+= 1` 與夾一個呼叫）與 Barrier 起跑的 runner，probe 和測試共用 |
-| `experiments/switchpoint_probe.py` | 切換點探針 | 六格實驗（gil=1/0 × 形狀 A/B × 切換間隔預設/1e-6），附 `--dis` 看 bytecode |
+| `experiments/counter_shapes.py` | 第一幕共用元件 | 兩種形狀的計數器（`+= 1` 與夾一個呼叫）與 Barrier 起跑的 runner，probe 和測試共用，程式形狀保持原樣 |
+| `experiments/switchpoint_probe.py` | 切換點探針（自然排程觀察） | 六格實驗（gil=1/0 × 形狀 A/B × 切換間隔預設/1e-6），附 `--dis` 看 bytecode；lost == 0 時印「本次未觀察到」 |
 | `experiments/cache_probe.py` | 開場的模組層級快取 | 64 個 key、8 條執行緒走 `if key not in cache: cache[key] = compute(key)`，數重複計算次數，`--fixed` 整段上鎖 |
 | `experiments/borrow_checker_probe.py` | runtime borrow checker 探針 | 8 條執行緒同時呼叫 `bump_mut`，統計 `Already borrowed` |
 | `experiments/compile_fail/` | 第二幕編譯失敗證據 | 獨立 cargo 專案，刻意編不過，產生 lib.rs 檔尾引用的 E0594 |
@@ -98,15 +99,29 @@ uv run --no-sync python -X gil=0 benchmark.py   # GIL off
 | workload | GIL on | GIL off |
 | --- | --- | --- |
 | 算術 workload，純 Python，1 thread | 基準 1x | 基準 1x |
-| 算術 workload，純 Python，8 threads | 約不加速（GIL 下 CPU-bound 無效） | 隨核心加速 |
-| 算術 workload，Rust native，8 workers（detach） | **會加速**（不碰直譯器） | 會加速 |
-| callback workload，8 workers（attached，呼叫 Python） | **約不加速**（attach 搶 GIL 序列化） | **隨核心加速** |
+| 算術 workload，純 Python，N threads | 約不加速（GIL 下 CPU-bound 無效） | 隨核心加速 |
+| 算術 workload，Rust native，M workers（detach） | **會加速**（不碰直譯器） | 會加速 |
+| callback workload，M workers（attached，呼叫 Python） | **約不加速**（attach 搶 GIL 序列化） | **隨核心加速** |
 
 兩欄都是同一個 free-threaded build，以 `-X gil=1/0` 切換，左欄不是一般版 CPython。
 
-關鍵對比是最後兩列的同列加速（GIL on 時間 / GIL off 時間）：native 列約 1x（那種加速
+教學預期是：最後兩列的同列加速（GIL on 時間 / GIL off 時間）native 列接近 1x（那種加速
 GIL on 時就能取得），callback 列遠大於 1x（GIL off 才解鎖）。這一組比值就是整場演講對
-「free-threading 到底多買到什麼」最直接的數字回答。
+「free-threading 到底多買到什麼」最直接的數字回答。`compare.py` 結尾只印本次實測的比值，
+教學預期另外標明；擴充未建置或兩個子行程的 Rayon pool 大小不同時，不下結論。
+
+#### 哪個參數影響哪一列（2026-10-13 起的呈現規則）
+
+- `--envelopes`、`--iterations`（`benchmark.py` 的 `N_ENVELOPES`、`ITERATIONS`）只影響純 Python 兩列。
+  Rust native 固定處理 100 顆、每顆 1,000,000 次，寫死在 `src/lib.rs`。
+- 純 Python 的工作量與 Rust native 不一致時，native 列相對 1 thread 的倍率印 `N/A`，並說明工作量不同；
+  純 Python 單、多執行緒仍可互比；每列自己的 GIL on / GIL off 比值仍然成立（同列兩次的工作量一致）。
+- callback 列一律不印相對 Python 算術基準的倍率，它是不同的工作。
+- `--threads`（`PY_THREADS`）只控制純 Python 的執行緒數，N 就是這個值。Rust 兩列的 M 是各子行程回報的
+  Rayon pool 大小（`get_thread_count()`）；兩個子行程回報不同時，標示「Rayon 設定不一致」並停用
+  Rust 兩列的同列加速解讀。擴充未安裝時印「未建置」，不杜撰 worker 數。
+- 輸出底部列出各列實際工作量與全部參數，結果可追溯。
+- 這些規則由 `tests/test_report_rendering.py` 用假量測結果驗證（驗證的是呈現邏輯，不量測）。
 
 ### 實測數字（2026-10-11）
 
@@ -129,39 +144,47 @@ callback workload 與算術 workload 是不同的工作，只看同列 GIL on / 
 原生實作與多執行緒平行的效果，這兩項優勢在 GIL on 時就能取得，而同列開關 GIL 約 1.0x，顯示本次
 native workload 沒有額外受惠。callback 列關掉 GIL 後快約 6 倍，這才是 free-threading 解鎖的部分。
 純 Python 8 threads 在 GIL on 完全不加速（0.99x），本身就是第一幕的證據。
-2026-10-13 起 `compare.py` 與 `benchmark.py` 的輸出改用這裡的標籤；
-[`results/compare_2026-10-11.txt`](results/compare_2026-10-11.txt) 是改標籤前跑的，原封不動保留，
-數字與本表相同，差別只在列名與欄名。
+
+歷史原始輸出與新版呈現規則的差別：[`results/compare_2026-10-11.txt`](results/compare_2026-10-11.txt)
+是 2026-10-11 用當時的程式跑的，原封不動保留。那一版用預設參數（純 Python 與 Rust native 工作量一致，
+100 顆 × 1,000,000 次），所以 447.44x 與 441.66x 這兩個倍率成立，本表照用；它的列名與欄名是舊標籤，
+Rust 兩列當時寫的 8 是 `--threads` 的值，與本機 Rayon pool 的 8 剛好相同。2026-10-13 起的
+`compare.py` 與 `benchmark.py` 改用本表的標籤、印各列實際工作量與 Rayon worker 數，並套用上面的 N/A 規則。
 
 ## 第一幕災難可重現
 
-共享狀態上的 read-modify-write race 一直都存在。GIL on 下會不會露餡，取決於讀和寫之間
-有沒有 eval breaker 檢查點：`self.value += 1` 剛好沒有（3.10 起，bpo-29988，檢查點只在
-CALL 之後、JUMP_BACKWARD 與 RESUME），所以不會被切開；中間夾一個 Python 呼叫
-（`self.value = self.value + step()`）就會。GIL off 下兩種形狀都直接露餡。
+共享狀態上的 read-modify-write race 一直都存在，不論 GIL on 或 GIL off。GIL on 下這一次會不會
+露餡，和讀與寫之間有沒有週期性的 eval breaker 檢查有關：在本專案展示的 CPython 3.14 上、這兩條
+執行路徑裡，切換間隔到期後的檢查落在 CALL 之後、JUMP_BACKWARD 與 RESUME（bpo-29988 起的設計）。
+`self.value += 1` 的讀寫之間沒有這種檢查，中間夾一個 Python 呼叫（`self.value = self.value + step()`）
+就有。這段說明只涵蓋週期性檢查這一種交出 GIL 的時機；阻塞 I/O、sleep、C 擴充主動釋放等其他時機
+不在範圍內，也不保證其他版本的檢查點位置相同。
 
-`tests/test_thread_safety.py` 把這件事寫成五個確定性測試，用 `sys._is_gil_enabled()` 決定
-哪些要跑、哪些 skip：
+自然排程下有沒有丟更新是觀察結果，受排程與 CPU 資源影響。2026-10-11 在本機（3.14.6）的觀察：
+GIL on 下 `+= 1` 零丟失、夾呼叫並把切換間隔縮到 1e-6 時穩定丟失；GIL off 下兩種形狀都丟失。
+零丟失只代表那次沒觀察到，不代表 `+= 1` 有 atomic 保證。這些觀察放在探針與 `results/`，不放在測試套件裡。
 
-| 測試 | gil=1 | gil=0 |
-| --- | --- | --- |
-| `test_tight_increment_never_races_under_gil`：`+= 1`，assert lost == 0 | PASS | skip |
-| `test_tight_increment_races_free_threaded`：`+= 1`，assert lost > 0 | skip | PASS |
-| `test_call_in_window_races_under_gil`：夾呼叫，`setswitchinterval(1e-6)`，assert lost > 0 | PASS | skip |
-| `test_call_in_window_races_free_threaded`：夾呼叫，assert lost > 0 | skip | PASS |
-| `test_counter_fixed_with_lock[run_a / run_b]`：加鎖後兩種形狀 lost == 0 | PASS | PASS |
+`tests/test_thread_safety.py` 只保留確定性的部分，GIL on / GIL off 都是 4 passed：
+
+| 測試 | 驗證什麼 |
+| --- | --- |
+| `test_counter_fixed_with_lock[run_a / run_b]` | 加鎖後兩種形狀 lost == 0，正確性要求 |
+| `test_staged_interleaving_loses_updates` | 刻意安排交錯：4 條 thread 用 Barrier 先全部讀到同一個舊值再寫回，結果必為 1，丟 3 次更新。證明 read-modify-write 不是原子的；它不是原始 `+= 1` 在自然排程下必定失敗的證據 |
+| `test_staged_interleaving_fixed_by_whole_operation_under_lock` | 同樣的交錯意圖，整段放進鎖裡就不丟更新（等待時不持鎖，Barrier 有 timeout，worker 例外傳回測試端） |
 
 ```bash
-uv run --no-sync python -X gil=1 -m pytest tests/test_thread_safety.py -v   # 4 passed, 2 skipped
-uv run --no-sync python -X gil=0 -m pytest tests/test_thread_safety.py -v   # 4 passed, 2 skipped
+uv run --no-sync python -X gil=1 -m pytest tests/test_thread_safety.py -v   # 4 passed
+uv run --no-sync python -X gil=0 -m pytest tests/test_thread_safety.py -v   # 4 passed
 ```
 
 測試用的 `Counter`（`run_a` / `run_b`）、`step()` 與 Barrier 起跑的 runner 都在
-`experiments/counter_shapes.py`，與探針共用一份定義。
+`experiments/counter_shapes.py`，與探針共用一份定義，程式形狀保持原樣，既有實驗仍可重現。
 
-`experiments/switchpoint_probe.py` 是切換點探針：一次跑一個形狀，用 `--interval` 調切換間隔，
-`--dis` 印出兩個迴圈的 bytecode。六格實驗（gil=1/0 × 形狀 A/B × 切換間隔預設/1e-6，每格 5 次）
-的原始輸出在 [`results/switchpoint_probe_2026-10-11.txt`](results/switchpoint_probe_2026-10-11.txt)。
+`experiments/switchpoint_probe.py` 是切換點探針，呈現的是自然排程下的觀察：一次跑一個形狀，用
+`--interval` 調切換間隔，`--dis` 印出兩個迴圈的 bytecode；lost == 0 時印「本次未觀察到丟更新，
+不代表操作具有 atomic 保證」。六格實驗（gil=1/0 × 形狀 A/B × 切換間隔預設/1e-6，每格 5 次）
+的原始輸出在 [`results/switchpoint_probe_2026-10-11.txt`](results/switchpoint_probe_2026-10-11.txt)
+（那一版的探針還沒有 note 那一行，其餘輸出格式相同）。
 
 ```bash
 uv run --no-sync python -X gil=1 experiments/switchpoint_probe.py --dis
@@ -171,8 +194,8 @@ uv run --no-sync python -X gil=0 experiments/switchpoint_probe.py --variant A
 
 `experiments/cache_probe.py` 是開場那個模組層級字典快取的探針：64 個 key，8 條執行緒 Barrier 起跑後
 各自走過全部 key，取值函式就是 `if key not in cache: cache[key] = compute(key)`，`compute` 約 1 ms。
-`CONTAINS_OP`（檢查）和 `STORE_SUBSCR`（寫入）之間夾著對 `compute` 的 `CALL`，那就是 eval breaker 的
-檢查點，所以 GIL on 用預設 5 ms 切換間隔也會重複計算。`--fixed` 把 check-then-act 整段包進同一把鎖。
+`CONTAINS_OP`（檢查）和 `STORE_SUBSCR`（寫入）之間夾著對 `compute` 的 `CALL`，那是週期性 eval breaker
+檢查的位置，所以 GIL on 用預設 5 ms 切換間隔也觀察到重複計算。`--fixed` 把 check-then-act 整段包進同一把鎖。
 原始輸出（含 `--dis` 的 bytecode）在 [`results/cache_probe_2026-10-11.txt`](results/cache_probe_2026-10-11.txt)：
 GIL on 預設間隔每次約 10 個重複，1e-6 約 430 個，GIL off 約 180 到 280 個，`--fixed` 為 0。
 
@@ -246,5 +269,6 @@ frozen dataclass）。
 1. Aliasing XOR Mutability：`count += 1` 的壞版本在 Rust 編譯期被擋（見 lib.rs 檔尾與
    `experiments/compile_fail/`）；同一個錯在 Python（test_thread_safety.py）只會默默 race。
 2. Send / Sync：`Py<RedEnvelope>` 是 Send+Sync，才能被帶進 rayon 平行區。
-3. Interior mutability：用 `AtomicU64`（無鎖）或 `Mutex`（鎖）安全地共享可變計數器，
-   對應 Python 的 `threading.Lock`。
+3. Interior mutability：用 `AtomicU64`（原子操作，不需要 Mutex）或 `Mutex`（鎖）安全地共享可變計數器，
+   對應 Python 的 `threading.Lock`。兩者在高競爭下都會競爭同一個位置，atomic 不保證比 Mutex 快；
+   各自累加後合併是降低競爭的一種選擇。
