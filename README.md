@@ -30,9 +30,9 @@
 
 | 檔案 | 對應簡報 | 實驗內容與觀察重點 |
 | --- | --- | --- |
-| `experiments/cache_probe.py` | 開場 (S03-S04)<br>第一幕 (S16) | **Module-level 快取探針**：8 條 thread 同時走 `if key not in cache: cache[key] = compute(key)`。因 `compute()` 的 `CALL` 觸發週期性切換檢查，連 GIL 開啟時都有約 2% 重複計算；GIL 關閉後暴增至 36-54%。加 `--fixed` 可驗證上鎖後歸零。 |
-| `experiments/counter_shapes.py` | 第一幕 (S10-S12) | **兩種長相的計數器**：定義邏輯相同但 bytecode 結構不同的 `run_a` (`self.value += 1`) 與 `run_b` (`self.value = self.value + step()`)，供探針與測試共用。 |
-| `experiments/switchpoint_probe.py` | 第一幕 (S11-S13) | **GIL 切換點探針**：在自然排程下執行六宮格實驗 (`gil=1/0` × `形狀 A/B` × `切換間隔 5ms / 1µs`)，支援 `--dis` 檢視 bytecode 的 `JUMP_BACKWARD` 與 `CALL` 位置。 |
+| `experiments/cache_probe.py` | 開場 (S03-S04)<br>第一幕 (S14-S15) | **Module-level 快取探針**：8 條 thread 同時走 `if key not in cache: cache[key] = compute(key)`。因 `compute()` 的 `CALL` 觸發週期性切換檢查，連 GIL 開啟時都有約 2% 重複計算；GIL 關閉後暴增至 36-54%。加 `--fixed` 可驗證上鎖後歸零。 |
+| `experiments/counter_shapes.py` | 第一幕 (S09-S11) | **兩種長相的計數器**：定義邏輯相同但 bytecode 結構不同的 `run_a` (`self.value += 1`) 與 `run_b` (`self.value = self.value + step()`)，供探針與測試共用。 |
+| `experiments/switchpoint_probe.py` | 第一幕 (S10-S12) | **GIL 切換點探針**：在自然排程下執行六宮格實驗 (`gil=1/0` × `形狀 A/B` × `切換間隔 5ms / 1µs`)，支援 `--dis` 檢視 bytecode 的 `JUMP_BACKWARD` 與 `CALL` 位置。 |
 
 ### 第二幕：把 Rust 的並行思維帶回 Python (`mental_model/` & `experiments/compile_fail/`)
 給純 Python (`threading`) 開發者的防禦實踐，不需要寫 Rust 也能直接套用：
@@ -43,7 +43,7 @@
 | `mental_model/02_interior_mutability.py` | Interior Mutability<br>(內部可變性) | 示範如何將 `Lock` 封裝進物件內部；並展示高頻率修改時如何透過「分片累加最後合併」避免熱鎖競爭 (lock contention)。 |
 | `mental_model/03_send_sync.py` | `Send` 與 `Sync`<br>(跨執行緒邊界規則) | 對照三種場景：**移交所有權** (`queue.put` 後徹底放手)、**執行緒局部資源** (`threading.local` 的適用場景與 thread pool 殘留陷阱)、**共享唯讀狀態** (`@dataclass(frozen=True)` 與淺層凍結限制)。 |
 | `mental_model/04_api_shape.py` | API 封裝設計<br>(讓正確的寫法最順手) | 以銀行帳戶提款 (`Account.withdraw`) 為例：對比「開放 `get/set` 導致超額提領 30 萬」與「隱藏 `_balance` 只提供完整原子操作」。同時示範為何 Python 的 `with lock() as data:` 無法阻止變數洩漏出作用域。 |
-| `experiments/compile_fail/` | 編譯期攔截 (S25, S52) | 獨立的 Cargo 專案，刻意觸發真實的 `E0594` 編譯錯誤 (對應 `src/lib.rs` 檔尾註解)。 |
+| `experiments/compile_fail/` | 編譯期攔截 (S24, S49) | 獨立的 Cargo 專案，刻意觸發真實的 `E0594` 編譯錯誤 (對應 `src/lib.rs` 檔尾註解)。 |
 
 ### 第三幕：Free-threaded 的真實加速區與跨語言邊界 (`src/lib.rs` & 根目錄)
 用一把尺 (`Attached` vs. `Detached`) 測量原生套件的加速紅利，並驗證 PyO3 的邊界保護：
@@ -52,10 +52,10 @@
 | --- | --- | --- |
 | `python_baseline.py` | 四列表第 1, 2 列 | 純 Python 單執行緒與多執行緒 (`ThreadPoolExecutor`) 算術基準線。 |
 | `src/lib.rs`<br>`count_valid_native_parallel` | 四列表第 3 列<br>(對照組：Detached) | **純 Rust 算術工作**：讀取資料後立刻 `detach` 脫離直譯器，交由 Rayon 8 核心平行計算。證明此類工作在 GIL 時代就已平行化，關掉 GIL 並不會更快 (同列加速約 `1.0x`)。 |
-| `src/lib.rs`<br>`count_valid_interpreter_bound_parallel` | 四列表第 4 列<br>(主角：Attached) | **Rust 呼叫 Python Callback**：8 個 worker 必須維持 `attached` 狀態反覆呼叫 Python 的 `scorer()` 函式。GIL 開啟時被迫排隊序列化，GIL 關閉後才真正平行 (同列加速約 `6.0x`)。 |
-| `src/lib.rs`<br>`count_valid_envelopes_parallel` | 第三幕 Side 1 (S52-S53) | 示範在 Rayon 平行閉包中，如何用 `AtomicU64` (`fetch_add(&self)`) 通過編譯器的 `Sync` 與借用檢查。 |
-| `src/lib.rs`<br>`RedEnvelope.bump_mut` + `experiments/borrow_checker_probe.py` | 第三幕 Side 2 (S54) | **PyO3 執行期借用檢查探針**：8 條 Python thread 同時呼叫簽章為 `&mut self` 的方法，驗證 GIL 關閉時會當場拋出 `RuntimeError: Already borrowed`。 |
-| `benchmark.py` / `compare.py` | 第三幕 (S48-S49) | 執行完整實驗並產出對照表 (`compare.py` 會自動開子行程跑完 `gil=1` 與 `gil=0` 並計算中位數)。 |
+| `src/lib.rs`<br>`count_valid_interpreter_bound_parallel` | 四列表第 4 列<br>(主角：Attached) | **Rust 呼叫 Python Callback**：8 個 worker 必須維持 `attached` 狀態反覆呼叫 Python 的 `light_scorer()` 函式。GIL 開啟時被迫排隊序列化，GIL 關閉後才真正平行 (同列加速約 `6.0x`)。 |
+| `src/lib.rs`<br>`count_valid_envelopes_parallel` | 第三幕 Side 1 (S49-S50) | 示範在 Rayon 平行閉包中，如何用 `AtomicU64` (`fetch_add(&self)`) 通過編譯器的 `Sync` 與借用檢查。 |
+| `src/lib.rs`<br>`RedEnvelope.bump_mut` + `experiments/borrow_checker_probe.py` | 第三幕 Side 2 (S51) | **PyO3 執行期借用檢查探針**：8 條 Python thread 同時呼叫簽章為 `&mut self` 的方法，驗證 GIL 關閉時會當場拋出 `RuntimeError: Already borrowed`。 |
+| `benchmark.py` / `compare.py` | 第三幕 (S44-S46) | 執行完整實驗並產出對照表 (`compare.py` 會自動開子行程跑完 `gil=1` 與 `gil=0` 並計算中位數)。 |
 | `tests/` | 正確性與壓力測試 | 包含確定性的執行緒交錯測試 (`test_thread_safety.py`)、報表防呆邏輯測試 (`test_report_rendering.py`)，以及供 `pytest-run-parallel` 壓測用的 `test_benchmark.py`。 |
 
 ---
@@ -108,7 +108,7 @@ uv run --no-sync python compare.py
 ### 實測數據 (Apple M1 Pro, Python 3.14.6t)
 
 * **測試環境**：Apple M1 Pro (6P+2E), macOS 26.6.2, Python 3.14.6t, PyO3 0.29.0, Rayon 1.12.0 (預設 8 workers)。
-* **原始輸出存檔**：[`results/compare_2026-10-11.txt`](https://www.google.com/search?q=results/compare_2026-10-11.txt) (簡報 S05、S48、S49 唯一數據來源)。
+* **原始輸出存檔**：[`results/compare_2026-10-11.txt`](results/compare_2026-10-11.txt) (簡報 S05、S44-S46 唯一數據來源)。
 
 | Workload (工作負載與執行模式) | GIL on (`-X gil=1`) | GIL off (`-X gil=0`) | 同列加速比 (GIL on / off) | 現象解析 |
 | --- | --- | --- | --- | --- |
@@ -146,7 +146,7 @@ uv run --no-sync python -X gil=0 experiments/switchpoint_probe.py --variant A
 
 ```
 
-*(原始實測紀錄存於 [`results/cache_probe_2026-10-11.txt`](https://www.google.com/search?q=results/cache_probe_2026-10-11.txt) 與 [`results/switchpoint_probe_2026-10-11.txt`](https://www.google.com/search?q=results/switchpoint_probe_2026-10-11.txt)。)*
+*(原始實測紀錄存於 [`results/cache_probe_2026-10-11.txt`](results/cache_probe_2026-10-11.txt) 與 [`results/switchpoint_probe_2026-10-11.txt`](results/switchpoint_probe_2026-10-11.txt)。)*
 
 ### 2. 確定性的執行緒交錯測試 (`tests/test_thread_safety.py`)
 
@@ -168,7 +168,7 @@ uv run --no-sync python -X gil=0 experiments/borrow_checker_probe.py  # GIL off:
 
 ```
 
-*(原始實測與 `std::hint::black_box` 防止編譯器消除死迴圈之診斷紀錄存於 [`results/borrow_checker_probe_2026-10-11.txt`](https://www.google.com/search?q=results/borrow_checker_probe_2026-10-11.txt)。)*
+*(原始實測與 `std::hint::black_box` 防止編譯器消除死迴圈之診斷紀錄存於 [`results/borrow_checker_probe_2026-10-11.txt`](results/borrow_checker_probe_2026-10-11.txt)。)*
 
 ### 4. 用 `pytest-run-parallel` 進行並行壓力測試
 
@@ -194,7 +194,7 @@ uv run --no-sync python -X gil=0 mental_model/04_api_shape.py
 
 ```
 
-*(原始輸出存於 [`results/mental_model_outputs_2026-10-11.txt`](https://www.google.com/search?q=results/mental_model_outputs_2026-10-11.txt) 與 [`results/mental_model_outputs_2026-10-13.txt`](https://www.google.com/search?q=results/mental_model_outputs_2026-10-13.txt)。)*
+*(原始輸出存於 [`results/mental_model_outputs_2026-10-11.txt`](results/mental_model_outputs_2026-10-11.txt) 與 [`results/mental_model_outputs_2026-10-13.txt`](results/mental_model_outputs_2026-10-13.txt)。)*
 
 ---
 
