@@ -10,6 +10,8 @@
 > uv run --no-sync python compare.py  # Takes ~5 mins; runs gil=1 and gil=0 in subprocesses
 > ```
 >
+> **Slides**: [`Unlearning the GIL in Free-threaded Python.pptx`](Unlearning%20the%20GIL%20in%20Free-threaded%20Python.pptx) (slide numbers `S01`-`S65` below refer to this deck).
+>
 > **Raw Results**: All verbatim benchmark and probe outputs live in `results/`. Every number cited in the slides comes directly from [`results/compare_2026-10-11.txt`](results/compare_2026-10-11.txt).
 
 這是 PyCon TW 2026 議程 **「別把 GIL 時代的思維帶進 Free-threaded Python：從 Rust 視角重新理解 Python 並行」** 的完整實驗與範例程式庫。
@@ -17,7 +19,7 @@
 專案骨架延伸自《從 Pythonista 到 Rustacean》第 9 章的紅包演算法範例 (`attach` / `detach` + Rayon + `gil_used = false`)，並進一步加入跨執行緒狀態共享、直譯器邊界探針，以及純 Python 的防禦設計對照。
 
 * **議程頁面**：https://tw.pycon.org/2026/zh-hant/conference/talk/372
-* **演講投影片**：(演講後上傳連結)
+* **演講投影片**：[`Unlearning the GIL in Free-threaded Python.pptx`](Unlearning%20the%20GIL%20in%20Free-threaded%20Python.pptx) (PowerPoint，共 65 頁，含 9 頁 Backup)
 
 ---
 
